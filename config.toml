@@ -1,0 +1,26 @@
+# The Hobbit - There and Back Again: settings
+
+# Body weight used for the calorie estimate (ACSM walking/running equations).
+weight_kg = 75
+
+# Start in fullscreen (press F to toggle while walking).
+fullscreen = true
+
+# Real minutes of walking for one full in-game day (24 = 1 game hour per minute).
+day_length_minutes = 24
+
+# Arrow keys change speed by this many km/h.
+speed_step = 0.5
+
+# Where the speed comes from: "keyboard" or "ftms" (Bluetooth treadmill, needs `pip install bleak`).
+# With "ftms" the keyboard still works until the belt connects.
+# speed_source = "keyboard"
+speed_source = "ftms"
+
+# Part of the treadmill's Bluetooth name to look for (yours shows up as FS-D2097B).
+ftms_device_name = "FS-"
+
+# Let the keys start, stop and change the belt's speed over Bluetooth (FTMS control point).
+ftms_allow_control = true
+
+show_fps = false
