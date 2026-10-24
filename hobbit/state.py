@@ -2,12 +2,15 @@
 
 import json
 import os
+import sys
 import time
 import tomllib
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CONFIG = os.path.join(ROOT, "config.toml")
 SAVE = os.path.join(ROOT, "save.json")
+WEB = sys.platform == "emscripten"      # the browser build: the save lives in localStorage
+WEB_KEY = "hobbit_save"
 
 DEFAULTS = {
     "weight_kg": 75.0,
@@ -40,9 +43,15 @@ class Progress:
     @classmethod
     def load(cls):
         p = cls()
-        if os.path.exists(SAVE):
+        d = None
+        if WEB:
+            import platform
+            raw = platform.window.localStorage.getItem(WEB_KEY)
+            d = json.loads(str(raw)) if raw else None
+        elif os.path.exists(SAVE):
             with open(SAVE) as fh:
                 d = json.load(fh)
+        if d:
             p.total_m = float(d.get("total_m", 0.0))
             p.total_s = float(d.get("total_s", 0.0))
             p.hour = float(d.get("hour", p.hour))
@@ -57,6 +66,10 @@ class Progress:
         d = {"total_m": self.total_m, "total_s": self.total_s, "hour": self.hour,
              "weather": self.weather, "sessions": sessions[-500:],
              "saved": time.strftime("%Y-%m-%d %H:%M:%S")}
+        if WEB:
+            import platform
+            platform.window.localStorage.setItem(WEB_KEY, json.dumps(d))
+            return
         tmp = SAVE + ".tmp"
         with open(tmp, "w") as fh:
             json.dump(d, fh, indent=1)

@@ -4,6 +4,8 @@ The game only asks a source for `target_kmh` (and whether it is `direct`,
 i.e. already a real measured speed that should not be smoothed).
 """
 
+import sys
+
 import pygame
 
 from .consts import MAX_KMH
@@ -52,6 +54,9 @@ class KeyboardSource:
 def make_source(settings):
     kind = settings.get("speed_source", "keyboard")
     kb = KeyboardSource(settings.get("speed_step", 0.5))
+    if kind == "ftms" and sys.platform == "emscripten":     # the browser build
+        from .webbelt import WebBluetoothSource
+        return WebBluetoothSource(settings, fallback=kb)
     if kind == "ftms":
         from .ftms import FTMSSource
         return FTMSSource(settings, fallback=kb)

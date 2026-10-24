@@ -4,6 +4,7 @@ import json
 import math
 import os
 import random
+import sys
 import time
 
 import pygame
@@ -37,7 +38,7 @@ class Game:
         self.settings = settings
         pygame.init()
         self.fullscreen = settings["fullscreen"] and not windowed and not headless
-        if headless:
+        if headless or sys.platform == "emscripten":    # in the browser the page scales the canvas
             self.screen = pygame.display.set_mode((W, H))
         else:
             flags = pygame.SCALED | (pygame.FULLSCREEN if self.fullscreen else 0)
@@ -315,6 +316,9 @@ class Game:
             if self.show_help:
                 self.show_help = False
                 return True
+            if sys.platform == "emscripten":    # a web page cannot quit: just save
+                self.save()
+                return True
             return False
         # hidden test commands: [ / ] = back / ahead 1 km, with Shift 10 km
         # (physical key positions, so they work on any keyboard layout; also PageUp/PageDown)
@@ -331,6 +335,8 @@ class Game:
             self.want_shot = True
             return True
         if k == pygame.K_f:
+            if sys.platform == "emscripten":    # the page itself handles F (hobbit/web.py)
+                return True
             pygame.display.toggle_fullscreen()
             self.fullscreen = not self.fullscreen
             pygame.mouse.set_visible(not self.fullscreen)
@@ -357,31 +363,50 @@ class Game:
 
     def run(self):
         self.source.start()
-        running = True
         self.dt = 0.0
         try:
-            while running:
-                ms = self.clock.tick(FPS)
-                dt_real = min(ms / 1000.0, 2.0)
-                self.dt = min(dt_real, 0.1)
-                for ev in pygame.event.get():
-                    if not self.handle(ev):
-                        running = False
-                self.update(self.dt, dt_real)
-                if self.banners:
-                    self.banners[0][2] -= self.dt
-                    if self.banners[0][2] <= 0:
-                        self.banners.pop(0)
-                self.flash = max(0.0, self.flash - self.dt * 5)
-                self.bolt_t -= self.dt
-                self.draw()
-                if self.want_shot:
-                    self.want_shot = False
-                    self.screenshot()
-                pygame.display.flip()
+            while self.step():
+                pass
         finally:
-            self.source.stop()
-            self.save()
-            pygame.quit()
-            print(f"Session: {self.session_m / 1000:.2f} km in {hud.hms(self.session_s)}, "
-                  f"~{self.kcal:.0f} kcal. Total: {self.progress.total_m / 1000:.2f} km.")
+            self.finish()
+
+    async def run_async(self):
+        """The same loop for the browser build (pygbag): yield to the page every frame."""
+        import asyncio
+        self.source.start()
+        self.dt = 0.0
+        try:
+            while self.step():
+                await asyncio.sleep(0)
+        finally:
+            self.finish()
+
+    def step(self):
+        """One frame; False when the game should end."""
+        running = True
+        ms = self.clock.tick(FPS)
+        dt_real = min(ms / 1000.0, 2.0)
+        self.dt = min(dt_real, 0.1)
+        for ev in pygame.event.get():
+            if not self.handle(ev):
+                running = False
+        self.update(self.dt, dt_real)
+        if self.banners:
+            self.banners[0][2] -= self.dt
+            if self.banners[0][2] <= 0:
+                self.banners.pop(0)
+        self.flash = max(0.0, self.flash - self.dt * 5)
+        self.bolt_t -= self.dt
+        self.draw()
+        if self.want_shot:
+            self.want_shot = False
+            self.screenshot()
+        pygame.display.flip()
+        return running
+
+    def finish(self):
+        self.source.stop()
+        self.save()
+        pygame.quit()
+        print(f"Session: {self.session_m / 1000:.2f} km in {hud.hms(self.session_s)}, "
+              f"~{self.kcal:.0f} kcal. Total: {self.progress.total_m / 1000:.2f} km.")

@@ -1,5 +1,7 @@
 """Dashboard, banners and overlays."""
 
+import sys
+
 from . import font
 from . import palette as P
 from .consts import W, H, TOP_BAR, SCENE_BOTTOM
@@ -89,6 +91,9 @@ HELP = [
     ("H", "THIS HELP"),
     ("ESC", "SAVE AND QUIT"),
 ]
+if sys.platform == "emscripten":        # the browser build
+    HELP[-1] = ("ESC", "SAVE")
+    HELP.insert(-1, ("B", "CONNECT BELT (BLUETOOTH)"))
 
 
 def help_overlay(f):

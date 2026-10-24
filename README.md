@@ -57,6 +57,24 @@ Confirmed working on the FS-D2097B: it speaks standard FTMS.
 
 If the belt uses its own protocol instead of FTMS, the scan output is what's needed to add it (`hobbit/ftms.py`).
 
+## Browser version
+
+```sh
+.venv/bin/pip install pygbag
+PATH=$PWD/.venv/bin:$PATH tools/build_web.sh serve   # http://localhost:8000
+PATH=$PWD/.venv/bin:$PATH tools/build_web.sh         # build only: build/hobbit/build/web/
+```
+
+Put `build/hobbit/build/web/` on any https host (GitHub Pages, Netlify...).
+The progress is kept in the browser's local storage; Esc saves (a page cannot quit). F toggles fullscreen.
+
+Press **B** to connect the belt (Web Bluetooth, `hobbit/webbelt.py`): Chrome, Edge or Opera on
+Windows, macOS, ChromeOS or Android; on Linux Chrome may need "Experimental Web Platform features" turned on in `chrome://flags`.
+Firefox and Safari have no Web Bluetooth, so there only the keys work.
+The browser shows its own device list; after a page reload pick the belt again.
+The keys drive the belt as with `ftms_allow_control = true`.
+Bluetooth also needs a page of its own: it does not work inside an embedding page such as itch.io's.
+
 ## Test keys (hidden)
 
 | Key | Action |
