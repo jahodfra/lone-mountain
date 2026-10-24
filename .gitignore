@@ -1,0 +1,13 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+
+# macOS metadata (AppleDouble files, Finder)
+._*
+.DS_Store
+
+# Runtime output
+save.json
+save.json.tmp
+screenshots/
