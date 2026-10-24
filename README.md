@@ -66,6 +66,10 @@ PATH=$PWD/.venv/bin:$PATH tools/build_web.sh         # build only: build/hobbit/
 ```
 
 Put `build/hobbit/build/web/` on any https host (GitHub Pages, Netlify...).
+
+**GitHub Pages:** `.github/workflows/pages.yml` builds and publishes the browser version on every
+push to `main` or `master` (or by hand from the Actions tab). Once, in the repository on GitHub:
+Settings → Pages → Source: **GitHub Actions**. The game is then at `https://<user>.github.io/<repo>/`.
 The progress is kept in the browser's local storage; Esc saves (a page cannot quit). F toggles fullscreen.
 
 Press **B** to connect the belt (Web Bluetooth, `hobbit/webbelt.py`): Chrome, Edge or Opera on
