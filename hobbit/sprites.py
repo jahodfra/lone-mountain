@@ -166,10 +166,13 @@ _BILBO_STEP = [
 def _bilbo():
     stand = from_ascii(_BILBO_TOP + _BILBO_STAND, _BILBO_MAP)
     step_body = from_ascii(_BILBO_TOP + _BILBO_STEP, _BILBO_MAP)
-    # step frames are 1px higher (the planted leg is straight)
-    step = new(stand.get_width(), stand.get_height())
-    step.blit(step_body, (0, -1))
-    return [step, stand, flip(step), stand]
+    # step frames are 1px higher (the planted leg is straight): one spare row on top keeps the head whole
+    w, h = stand.get_width(), stand.get_height() + 1
+    step = new(w, h)
+    step.blit(step_body, (0, 0))
+    standing = new(w, h)
+    standing.blit(stand, (0, 1))
+    return [step, standing, flip(step), standing]
 
 
 def _gandalf(step):
@@ -531,7 +534,7 @@ def spider():
             pygame.draw.lines(s, P.BLACK, False, [(9, y), (9 + side * 5, y - 3), (9 + side * 8, y + 3)])
     dither_ellipse(s, 9, 23, 4, 4, P.BLACK, P.GREY_D)
     dither_ellipse(s, 9, 18, 2, 2, P.BLACK)
-    put(s, 8, 18, P.RED); put(s, 10, 18, P.RED)
+    put(s, 8, 18, P.EYES); put(s, 10, 18, P.EYES)      # glow in the dark
     return s
 
 
@@ -539,6 +542,30 @@ def eyes():
     s = new(7, 2)
     s.fill(P.EYES, (0, 0, 2, 1))
     s.fill(P.EYES, (5, 0, 2, 1))
+    return s
+
+
+def gollum_eyes():
+    """Two big round pale eyes, "lamp-like", out on the dark lake."""
+    s = new(12, 5)
+    for cx in (2, 9):
+        dither_ellipse(s, cx, 2, 2.4, 2.4, P.EYES)
+        put(s, cx, 2, P.BLACK)
+    return s
+
+
+def campfire(frame):
+    """The trolls' fire of beech logs, with a mutton spit."""
+    s = new(24, 16)
+    pygame.draw.line(s, P.BROWN_D, (1, 15), (22, 12), 2)
+    pygame.draw.line(s, P.BROWN_D, (2, 12), (22, 15), 2)
+    pts = [(5, 14), (8, 6 - frame), (11, 9), (13, 2 + frame), (16, 8), (18, 5 - frame), (20, 14)]
+    pygame.draw.polygon(s, P.FLAME, pts)
+    pygame.draw.polygon(s, P.FLAME2, [(9, 14), (12, 8 + frame), (14, 10), (16, 14)])
+    pygame.draw.line(s, P.GREY_D, (2, 4), (22, 4))
+    s.fill(P.BROWN_M, (10, 3, 5, 3))
+    s.fill(P.GREY_D, (1, 4, 1, 12))
+    s.fill(P.GREY_D, (22, 4, 1, 12))
     return s
 
 
@@ -657,20 +684,20 @@ def stone_post():
 
 
 def erebor_gate():
+    """The Front Gate: pillars and a carved arch round the opening into the hall.
+    4 px per metre; the doorway (transparent) is the hall's 9 x 9 m, gabled like a tunnel mouth."""
     s = new(160, 110)
     dither_poly(s, [(0, 109), (10, 50), (40, 20), (80, 0), (120, 20), (150, 50), (159, 109)], P.ROCK_M, P.ROCK_D)
     rng = random.Random(11)
     for _ in range(30):
         x, y = rng.randint(10, 150), rng.randint(20, 100)
         pygame.draw.line(s, P.ROCK_D, (x, y), (x + rng.randint(-8, 8), y + rng.randint(2, 8)))
-    s.fill(P.ROCK_L, (56, 44, 48, 66))
-    dither_ellipse(s, 80, 46, 24, 14, P.ROCK_L)
-    s.fill(P.BLACK, (62, 52, 36, 58))
-    dither_ellipse(s, 80, 52, 18, 10, P.BLACK)
-    for x in (50, 104):
-        s.fill(P.ROCK_L, (x, 40, 6, 70))
-        s.fill(P.ROCK_D, (x + 4, 40, 2, 70))
-    dither_poly(s, [(62, 109), (98, 109), (90, 100), (70, 100)], P.WATER_L, P.WATER_D)
+    s.fill(P.ROCK_L, (52, 56, 56, 54))
+    dither_ellipse(s, 80, 58, 30, 12, P.ROCK_L)
+    for x in (46, 108):
+        s.fill(P.ROCK_L, (x, 50, 6, 60))
+        s.fill(P.ROCK_D, (x + 4, 50, 2, 60))
+    pygame.draw.polygon(s, P.TRANSP, [(62, 109), (62, 74), (80, 68), (98, 74), (98, 109)])
     return s
 
 
@@ -683,11 +710,18 @@ def lonely_mountain():
     dither_poly(s, outline, P.ROCK_M, P.ROCK_L)
     dither_poly(s, [(pk, 0), (176, h - 72), (214, h - 40), (w, h), (190, h)], P.ROCK_D, P.ROCK_M)
     rng = random.Random(1941)
+    marks = new(w, h)
     for _ in range(26):                     # gullies running down the slopes
         x = rng.randint(70, 240)
         y = rng.randint(14, 50)
-        pygame.draw.line(s, P.ROCK_D, (x, y), (x + rng.randint(-14, 14), y + rng.randint(10, 28)))
-    pygame.draw.lines(s, P.ROCK_L, False, [(pk, 0), (128, 30), (96, 60), (70, h)], 2)   # western ridge
+        pygame.draw.line(marks, P.ROCK_D, (x, y), (x + rng.randint(-14, 14), y + rng.randint(10, 28)))
+    pygame.draw.lines(marks, P.ROCK_L, False, [(pk, 0), (128, 30), (96, 60), (70, h)], 2)   # western ridge
+    # only on the mountain itself, never out in the sky
+    for y in range(h):
+        for x in range(w):
+            c = marks.get_at_mapped((x, y))
+            if c != P.TRANSP and s.get_at_mapped((x, y)) != P.TRANSP:
+                s.set_at((x, y), c)
     s.set_colorkey(P.TRANSP)
     return s
 
@@ -769,6 +803,8 @@ def build():
     S["web"] = SpriteDef([web()], 3.0)
     S["spider"] = SpriteDef([spider()], 2.2)
     S["eyes"] = SpriteDef([eyes()], 0.12)
+    S["gollum_eyes"] = SpriteDef([gollum_eyes()], 0.45)
+    S["campfire"] = SpriteDef([campfire(f) for f in range(2)], 1.4, anim_fps=5)
     S["beehive"] = SpriteDef([beehive()], 0.8)
     S["beorn_hall"] = SpriteDef([beorn_hall()], 9.0)
     S["carrock"] = SpriteDef([carrock()], 40.0)
@@ -779,7 +815,7 @@ def build():
     S["stump"] = SpriteDef([stump(rng) for _ in range(2)], 0.9)
     S["post"] = SpriteDef([post()], 1.1)
     S["stone_post"] = SpriteDef([stone_post()], 0.8)
-    S["erebor_gate"] = SpriteDef([erebor_gate()], 45.0)
+    S["erebor_gate"] = SpriteDef([erebor_gate()], 27.5)
     S["lonely_mountain"] = SpriteDef([lonely_mountain()], 0)
     S["eagle"] = SpriteDef([eagle(0), eagle(1)], 0, anim_fps=3)
     S["smaug"] = SpriteDef([smaug(0), smaug(1)], 0, anim_fps=2)

@@ -10,11 +10,16 @@ from . import palette as P
 from . import sprites as SP
 from .consts import (W, TOP_BAR, SCENE_BOTTOM, HORIZON, SEG, DRAW_SEGS, CAM_HEIGHT,
                      PLAYER_AHEAD, CAM_DEPTH, PX, VERGE, WALL_GAP, NEAR,
-                     TUNNEL_HEIGHT, LIP, WALL_HEIGHT)
+                     LIP, WALL_HEIGHT)
 from .world import height
 
 LIM = 30000
 EDGE_SPRITES = ("post", "stone_post", "torch")   # meant to sit right at the path edge
+MASK_KEY = 255           # spare palette index, used as a colorkey when dithering layers together
+BAYER = [[0, 8, 2, 10], [12, 4, 14, 6], [3, 11, 1, 9], [15, 7, 13, 5]]
+FORDS = ("ford", "blackford")
+HALL_BEYOND = 8.0     # m of Erebor's hall drawn past the turning point
+SKIRT_FADE = (120.0, 320.0)   # m: rock under a gorge path dithers away into the valley
 
 
 def _c(v):
@@ -31,6 +36,12 @@ class Renderer:
         self.S = sprite_defs
         self.scaled_cache = {}
         self.bg_cache = {}
+        self.blend_cache = {}
+        self.masks = {}
+        self.skirt_tmp = SP.new(W, SCENE_BOTTOM)
+        self.skirt_tmp.set_colorkey(MASK_KEY)
+        self.backdrop = SP.new(W, SCENE_BOTTOM)
+        self.backdrop.set_colorkey(None)
         rng = random.Random(42)
         self.stars = [(rng.randrange(640), rng.randrange(TOP_BAR, HORIZON - 20)) for _ in range(70)]
         self.clouds = [(rng.randrange(640), rng.randrange(TOP_BAR + 6, 52), k) for k in range(8)]
@@ -62,16 +73,17 @@ class Renderer:
         return self.S[key]
 
     # --- background --------------------------------------------------------
-    def _layer(self, kind, seed, near):
+    def _layer(self, kind, seed, near, slots):
         rng = random.Random(seed)
         hgt = 90
         s = SP.new(640, hgt)
         ph = [rng.uniform(0, math.tau) for _ in range(8)]
-        col = P.HAZE_NEAR if near else P.HAZE_FAR
+        far_col, near_col, near2_col = slots
+        col = near_col if near else far_col
         heights = []
         for x in range(640):
             u = x / 640.0 * math.tau
-            if kind == "hills":
+            if kind in ("hills", "castle_hills"):
                 base, amp = (10, 9) if near else (18, 10)
                 h = base + amp * (0.5 * math.sin(2 * u + ph[0]) + 0.3 * math.sin(5 * u + ph[1])
                                   + 0.2 * math.sin(11 * u + ph[2]))
@@ -98,12 +110,36 @@ class Renderer:
             if near:
                 for y in range(top + 3, hgt):
                     if (x + y) % 2 or y > top + 8:
-                        s.set_at((x, y), P.HAZE_NEAR2)
+                        s.set_at((x, y), near2_col)
             elif kind in ("mountains", "cliffs") and h > 40:
                 snow = top + max(2, (h - 40) // 2)
                 for y in range(top, min(snow, hgt)):
                     if y < snow - 1 or (x + y) % 2:
                         s.set_at((x, y), P.HAZE_FAR_SNOW)
+        if kind == "castle_hills":
+            # "old castles with an evil look" on the tops of some hills
+            for x in range(6, 634):
+                if heights[x] >= max(heights[x - 6:x + 7]) and rng.random() < 0.5:
+                    w, th = rng.randint(3, 5), rng.randint(5, 9)
+                    top = hgt - heights[x] - th
+                    s.fill(col, (x - w // 2, top, w, th + 1))
+                    for cx in range(x - w // 2, x - w // 2 + w, 2):
+                        s.set_at((cx, top - 1), col)
+        if kind == "cliffs" and near:
+            # Rivendell: streams falling from notches in the valley walls down to its floor
+            last = -99
+            for x in range(8, 632):
+                h = heights[x]
+                if x - last > 40 and 9 < h <= min(heights[x - 8:x + 9]):
+                    last = x
+                    for y in range(hgt - h + 1, hgt):
+                        s.set_at((x, y), P.HAZE_FAR_SNOW)
+                        if (y // 2) % 2:
+                            s.set_at((x + 1, y), P.HAZE_FAR_SNOW)
+                    for y in range(hgt - 3, hgt):       # mist where it lands
+                        for dx in range(-2, 4):
+                            if (x + dx + y) % 2:
+                                s.set_at((x + dx, y), P.HAZE_FAR_SNOW)
         return s
 
     def _valley(self):
@@ -123,7 +159,7 @@ class Renderer:
             x = rng.randrange(640)
             size = 0.8 + y / 22.0
             rx, ry = size * rng.uniform(1.5, 3.0), max(0.6, size * 0.4)
-            col = P.FAR_LAND2 if y < 30 else P.HAZE_NEAR2
+            col = P.FAR_LAND2 if y < 30 else P.FAR_LAND
             for yy in range(int(y - ry), int(y + ry) + 1):
                 for xx in range(int(x - rx), int(x + rx) + 1):
                     if 0 <= yy < h and ((xx - x) / rx) ** 2 + ((yy - y) / ry) ** 2 <= 1 and (xx + yy) % 2 == 0:
@@ -143,11 +179,54 @@ class Renderer:
         return s
 
     def layers(self, region):
-        r = self.bg_cache.get(region.key)
+        key = (region.key, region.bg_far, region.bg_near)
+        r = self.bg_cache.get(key)
         if r is None:
-            r = (self._layer(region.bg_far, region.index * 13 + 1, False),
-                 self._layer(region.bg_near, region.index * 13 + 7, True))
-            self.bg_cache[region.key] = r
+            slots = P.HAZE_SETS[region.index % 2]
+            r = (self._layer(region.bg_far, region.index * 13 + 1, False, slots),
+                 self._layer(region.bg_near, region.index * 13 + 7, True, slots))
+            self.bg_cache[key] = r
+        return r
+
+    def _mask(self, level):
+        """MASK_KEY where the Bayer threshold is >= level, transparent elsewhere."""
+        m = self.masks.get(level)
+        if m is None:
+            tile = SP.new(4, 4)
+            for y in range(4):
+                for x in range(4):
+                    if BAYER[y][x] >= level:
+                        tile.set_at((x, y), MASK_KEY)
+            m = SP.new(640, SCENE_BOTTOM + 4)
+            for y in range(0, SCENE_BOTTOM + 4, 4):
+                for x in range(0, 640, 4):
+                    m.blit(tile, (x, y))
+            self.masks[level] = m
+        return m
+
+    def blended_layers(self, earlier, later, share):
+        """Background layers dithered between two neighbouring regions (share of `later`)."""
+        level = int(round(share * 16))
+        if level <= 0:
+            return self.layers(earlier)
+        if level >= 16:
+            return self.layers(later)
+        key = (earlier.key, earlier.bg_far, later.key, later.bg_far, level)
+        r = self.blend_cache.get(key)
+        if r is None:
+            if len(self.blend_cache) > 64:
+                self.blend_cache.clear()
+            out = []
+            for a, b in zip(self.layers(earlier), self.layers(later)):
+                comp = a.copy()
+                over = b.copy()
+                over.set_colorkey(None)
+                over.blit(self._mask(level), (0, 0))
+                over.set_colorkey(MASK_KEY)
+                comp.blit(over, (0, 0))
+                comp.set_colorkey(P.TRANSP)
+                out.append(comp)
+            r = self.blend_cache[key] = tuple(out)
         return r
 
     def draw_background(self, st):
@@ -184,11 +263,15 @@ class Renderer:
         for cx, cy, k in self.clouds[:n]:
             x = int((cx - bgx * 0.6 + st.t * 2.0) % 700) - 60
             f.blit(clouds[k], (x, cy))
-        far, near = self.layers(st.region)
+        if st.border:
+            far, near = self.blended_layers(*st.border)
+        else:
+            far, near = self.layers(st.region)
         fy = HORIZON - far.get_height()
         f.blit(far, (-bgx, fy))
         f.blit(far, (640 - bgx, fy))
         self.draw_lonely_mountain(st)
+        self.draw_home_hill(st)
         nbgx = int(st.bg_offset * 1.3) % 640
         ny = HORIZON - near.get_height() + 1
         f.blit(near, (-nbgx, ny))
@@ -197,9 +280,12 @@ class Renderer:
         vx = int(st.bg_offset * 1.6) % 640
         f.blit(self.valley, (-vx, HORIZON))
         f.blit(self.valley, (640 - vx, HORIZON))
-        if st.region.gloom >= 0.3:
-            f.blit(self.canopy, (-bgx, TOP_BAR))
-            f.blit(self.canopy, (640 - bgx, TOP_BAR))
+        # the forest roof closes over the sky as the gloom deepens
+        k = min(1.0, max(0.0, (st.gloom - 0.1) / 0.2))
+        if k > 0:
+            cy = TOP_BAR - int((1 - k) * self.canopy.get_height())
+            f.blit(self.canopy, (-bgx, cy))
+            f.blit(self.canopy, (640 - bgx, cy))
         # birds and dragons
         km = st.route / 1000.0
         if 813 <= km <= 845:
@@ -212,15 +298,26 @@ class Renderer:
                 if math.cos(a) < 0:
                     img = SP.flip(img)
                 f.blit(img, (int(x) - 10, int(y)))
-        if st.direction > 0 and 1470 <= km < 1530:
+        # Smaug only leaves the Mountain in the dark; by day it smokes
+        if st.direction > 0 and 1470 <= km < 1530 and st.night > 0.3:
             sm = self.S["smaug"]
             a = st.t * 0.11
             x = 160 + 140 * math.sin(a)
             y = 22 + 10 * math.sin(st.t * 0.23)
             img = sm.frame(0, st.t)
+            face = -1
             if math.cos(a) > 0:
                 img = SP.flip(img)
+                face = 1
             f.blit(img, (int(x) - 24, int(y)))
+            if int(st.t * 0.7) % 3 == 0:       # a burst of fire now and then
+                hx, hy = int(x) + face * 22, int(y) + 10
+                for k in range(14):
+                    px = hx + face * k
+                    py = hy + int(k * 0.5) + (k * 7) % 3 - 1
+                    f.set_at((px, py), P.FLAME2 if k < 5 else P.FLAME)
+                    if k > 4 and k % 2:
+                        f.set_at((px, py + 1), P.FLAME)
 
     def draw_lonely_mountain(self, st):
         if st.direction < 0:
@@ -238,11 +335,46 @@ class Renderer:
         if d < 30:      # close up: the textured mountain
             img = self.scaled(self.S["lonely_mountain"].variants[0], h)
             self.f.blit(img, (int(cx - img.get_width() * 152 / 312), int(base - img.get_height())))
+            if st.night <= 0.3:
+                self.draw_smoke(st, cx, h)
             return
-        col = P.HAZE_FAR
+        col = P.MOUNTAIN
         pts = [(cx - h * 1.9, base), (cx - h * 0.9, base - h * 0.45), (cx - h * 0.35, top + h * 0.12),
                (cx, top), (cx + h * 0.3, top + h * 0.1), (cx + h * 0.8, base - h * 0.5), (cx + h * 2.0, base)]
         pygame.draw.polygon(self.f, col, [(_c(x), _c(y)) for x, y in pts])
+        if st.night <= 0.3 and d < 60:
+            self.draw_smoke(st, cx, h)
+
+    def draw_smoke(self, st, cx, h):
+        """While Smaug lives, smoke and steam drift out of the Front Gate by day."""
+        s = max(0.4, h / 60.0)
+        for k in range(10):
+            r = (1.5 + k * 0.9) * s
+            x = cx + (k * 2.0 + 2 * math.sin(st.t * 0.5 + k)) * s
+            y = HORIZON - (3 + k * 4.5) * s
+            for py in range(int(y - r * 0.7), int(y + r * 0.7) + 1):
+                for px in range(int(x - r), int(x + r) + 1):
+                    inside = ((px - x) / r) ** 2 + ((py - y) / (r * 0.7)) ** 2 <= 1
+                    # thinning out as it rises
+                    if inside and (k < 4 or (px + py + k) % 2) and TOP_BAR <= py < HORIZON and 0 <= px < W:
+                        self.f.set_at((px, py), P.CLOUD_SH)
+
+    def draw_home_hill(self, st):
+        """On the way back: Bilbo's own Hill rises ahead over the last km, Bag End's windows in it."""
+        if st.direction > 0 or st.route > 6000:
+            return
+        d = st.route / 1000.0
+        h = 6 + 16 * (1 - d / 6) ** 1.5
+        cx = 160 + 50 * math.sin(st.bg_offset / 400.0 + 1.0)
+        pts = [(cx - h * 3.2, HORIZON), (cx - h * 1.6, HORIZON - h * 0.6), (cx - h * 0.5, HORIZON - h),
+               (cx + h * 0.6, HORIZON - h * 0.95), (cx + h * 1.8, HORIZON - h * 0.45), (cx + h * 3.4, HORIZON)]
+        pygame.draw.polygon(self.f, P.GREEN_M, [(_c(x), _c(y)) for x, y in pts])
+        pygame.draw.lines(self.f, P.GREEN_L, False, [(_c(x), _c(y)) for x, y in pts[1:-1]])
+        r = max(1, int(h / 9))
+        dy = HORIZON - int(h * 0.45)
+        pygame.draw.circle(self.f, P.GREEN_D, (int(cx), dy), r)
+        for wx in (-3, 3, 6):
+            self.f.set_at((int(cx + wx * r), dy), P.WINDOW)
 
     # --- road ----------------------------------------------------------------
     def project(self, st, world):
@@ -258,6 +390,7 @@ class Renderer:
         back.X, back.y, back.h = 0.0, seg0.y, seg0.half
         back.s, back.cx, back.gy = 0.0, 160.0, 0.0
         pts = [back]
+        self.dead_end = False
         for n in range(DRAW_SEGS + 1):
             seg = world.segment(base_i + 1 + n)
             b = Boundary()
@@ -270,6 +403,11 @@ class Renderer:
             b.cx = 160 + b.s * X * PX
             b.gy = HORIZON - b.s * (seg.y - st.cam_y) * PX
             pts.append(b)
+            if seg.dir != seg0.dir and seg0.dir > 0 and seg.route <= J.LEG_M - HALL_BEYOND:
+                # inside Erebor: the way back starts here and is not drawn ahead; the hall
+                # goes on a little past the turn so Bilbo, walking ahead, stays in it
+                self.dead_end = True
+                break
             X += slope * SEG + 0.5 * seg.k * SEG * SEG
             slope += seg.k * SEG
         world.trim(base_i - 10)
@@ -306,8 +444,15 @@ class Renderer:
     def draw_world(self, st, world, characters):
         f = self.f
         pts = self.project(st, world)
+        reach = self.skirt_reach(pts)
+        self.backdrop.blit(f, (0, 0))       # sky, hills and valley floor: what far rock fades into
         cam_y = st.cam_y
         poly = pygame.draw.polygon
+        if self.dead_end and len(pts) > 1:      # the back wall of the hall inside the Gate
+            b = pts[-1]
+            l, r = self.edge(b, -1, VERGE + b.seg.gap[0]), self.edge(b, 1, VERGE + b.seg.gap[1])
+            top = self.ly(b, b.seg.roof, cam_y)
+            poly(f, P.BLACK, [(_c(l), _c(top)), (_c(r), _c(top)), (_c(r), _c(b.gy)), (_c(l), _c(b.gy))])
         # characters sorted far to near, keyed by segment slot
         slots = {}
         for ch in characters:
@@ -323,62 +468,83 @@ class Renderer:
             if clipped:
                 b0 = self.clip(b0, b1, cam_y)
             gset = P.GROUND_SET[seg.region.index % 2]
+            avg_grass, avg_path, avg_verge = P.GROUND_AVG[seg.region.index % 2]
             stripe = (seg.i // 2) % 2
             vstripe = seg.i % 2
             y0, y1 = b0.gy, b1.gy
+            # far away a stripe gets thinner than ~2 px: draw it in one (average) colour, no moire
+            far1 = y0 - y1 < 2.0        # stripes that change every segment
+            far2 = y0 - y1 < 1.0        # stripes that change every 2 segments
+            far3 = y0 - y1 < 0.67       # every 3 segments (tunnel bands)
             if seg.cliffs and not clipped:
-                self.draw_skirt(seg, b0, cam_y)
+                self.draw_skirt(seg, b0, cam_y, reach[n])
             if any(seg.cap_back):
                 self.draw_caps(seg, seg.cap_back, b1, cam_y)
             visible = y1 < y0 and y1 < SCENE_BOTTOM
             if visible:
-                grass = gset + (P.G_A if stripe else P.G_B)
+                grass = avg_grass if far2 else gset + (P.G_A if stripe else P.G_B)
                 iy0, iy1 = _c(y0), _c(y1)
-                for side, stype in ((-1, seg.left), (1, seg.right)):
+                for k, (side, stype) in enumerate(((-1, seg.left), (1, seg.right))):
                     e0, e1 = self.edge(b0, side, VERGE), self.edge(b1, side, VERGE)
                     if stype in ("grass", "wall"):
                         far_edge = side * LIM
                         poly(f, grass, [(_c(e0), iy0), (far_edge, iy0), (far_edge, iy1), (_c(e1), iy1)])
-                    elif stype == "water":
+                    elif stype in ("water", "blackwater"):
                         far_edge = side * LIM
-                        wave = (seg.i + int(st.t * 1.5)) % 4 == 0
-                        poly(f, P.WATER_L if wave else P.WATER_D,
+                        wave = (seg.i + int(st.t * 1.5)) % 4 == 0 and not far1
+                        if stype == "water":
+                            wc = P.WATER_L if wave else P.WATER_D
+                        else:
+                            wc = P.BLUE_D if wave else P.BLACK
+                        poly(f, wc,
                              [(_c(e0), iy0), (far_edge, iy0), (far_edge, iy1), (_c(e1), iy1)])
-                        bk0, bk1 = self.edge(b0, side, VERGE + 0.35), self.edge(b1, side, VERGE + 0.35)
-                        poly(f, P.BROWN_L if stripe else P.TAN,
-                             [(_c(e0), iy0), (_c(bk0), iy0), (_c(bk1), iy1), (_c(e1), iy1)])
+                        if seg.path not in FORDS:   # banks under a bridge; a ford runs through the water
+                            bk0, bk1 = self.edge(b0, side, VERGE + 0.35), self.edge(b1, side, VERGE + 0.35)
+                            poly(f, P.BROWN_L if stripe or far2 else P.TAN,
+                                 [(_c(e0), iy0), (_c(bk0), iy0), (_c(bk1), iy1), (_c(e1), iy1)])
                     elif stype == "gorge":
                         # rock lip, then the cliff top sloping away into the gorge
                         lip = VERGE + LIP
                         l0, l1 = self.edge(b0, side, lip), self.edge(b1, side, lip)
-                        poly(f, P.ROCK_L if stripe else P.ROCK_M,
+                        poly(f, P.ROCK_L if stripe or far2 else P.ROCK_M,
                              [(_c(e0), iy0), (_c(l0), iy0), (_c(l1), iy1), (_c(e1), iy1)])
                         o0, o1 = self.edge(b0, side, lip + 1.4), self.edge(b1, side, lip + 1.4)
                         d0, d1 = self.ly(b0, -3.0, cam_y), self.ly(b1, -3.0, cam_y)
-                        poly(f, P.ROCK_M if stripe else P.ROCK_D,
+                        poly(f, P.ROCK_M if stripe or far2 else P.ROCK_D,
                              [(_c(l0), iy0), (_c(o0), _c(d0)), (_c(o1), _c(d1)), (_c(l1), iy1)])
-                    else:   # tunnel: ground strip up to the tunnel wall
-                        w0, w1 = self.edge(b0, side, VERGE + WALL_GAP), self.edge(b1, side, VERGE + WALL_GAP)
-                        poly(f, grass, [(_c(e0), iy0), (_c(w0), iy0), (_c(w1), iy1), (_c(e1), iy1)])
+                    else:   # tunnel: ground strip up to the tunnel wall (or Gollum's dark water)
+                        w0 = self.edge(b0, side, VERGE + b0.seg.gap[k])
+                        w1 = self.edge(b1, side, VERGE + b1.seg.gap[k])
+                        floor = grass
+                        if seg.path == "lake" and seg.gap[k] > WALL_GAP:
+                            floor = P.WATER_D if (seg.i + int(st.t * 1.5)) % 4 == 0 and not far1 else P.BLUE_D
+                        poly(f, floor, [(_c(e0), iy0), (_c(w0), iy0), (_c(w1), iy1), (_c(e1), iy1)])
                 # path
                 p0, p1 = b0.s * b0.h * PX, b1.s * b1.h * PX
                 if seg.path == "stone":
-                    pc = P.GREY_L if stripe else P.GREY_M
+                    pc = P.GREY_L if stripe and not far2 else P.GREY_M
                 elif seg.path == "planks":
-                    pc = P.BROWN_L if vstripe else P.BROWN_M
+                    pc = P.BROWN_L if vstripe and not far1 else P.BROWN_M
                 elif seg.path == "ford":
-                    pc = P.WATER_L if (seg.i + int(st.t * 2)) % 3 else P.WHITE
+                    pc = P.WATER_L if (seg.i + int(st.t * 2)) % 3 or far1 else P.WHITE
+                elif seg.path == "blackford":
+                    pc = P.BLACK if (seg.i + int(st.t * 2)) % 3 or far1 else P.GREY_D
                 else:
-                    pc = gset + (P.P_A if stripe else P.P_B)
+                    pc = avg_path if far2 else gset + (P.P_A if stripe else P.P_B)
                 poly(f, pc, [(_c(b0.cx - p0), iy0), (_c(b0.cx + p0), iy0),
                              (_c(b1.cx + p1), iy1), (_c(b1.cx - p1), iy1)])
-                vc = gset + (P.V_A if vstripe else P.V_B)
+                if seg.path == "ford":       # the river itself, not grass, along the ford
+                    vc = P.WATER_D
+                elif seg.path == "blackford":
+                    vc = P.BLACK
+                else:
+                    vc = avg_verge if far1 else gset + (P.V_A if vstripe else P.V_B)
                 for side in (-1, 1):
                     poly(f, vc, [(_c(b0.cx + side * p0), iy0), (_c(self.edge(b0, side, VERGE)), iy0),
                                  (_c(self.edge(b1, side, VERGE)), iy1), (_c(b1.cx + side * p1), iy1)])
             # walls and tunnel
             if seg.left in ("wall", "tunnel") or seg.right in ("wall", "tunnel"):
-                self.draw_walls(st, seg, b0, b1, cam_y, stripe)
+                self.draw_walls(st, seg, b0, b1, cam_y, stripe, far3)
             # characters inside this segment
             for ch in sorted(slots.get(n, ()), key=lambda c: -c["zrel"]):
                 self.draw_character(st, ch, b0, b1, cam_y)
@@ -391,6 +557,8 @@ class Renderer:
             # scenery sprites standing at this segment
             if seg.sprites:
                 for key, var, x, yoff, sc, fl in seg.sprites:
+                    if key in J.NIGHT_ONLY and (st.night < 0.5 or st.direction < 0):
+                        continue
                     d = self.sprite_def(key)
                     img = d.frame(var, st.t)
                     hp = b0.s * d.height * sc * PX
@@ -408,23 +576,23 @@ class Renderer:
                     if -im.get_width() < sx < W + im.get_width():
                         f.blit(im, (int(sx - im.get_width() / 2), int(sy - im.get_height())))
 
-    def draw_walls(self, st, seg, b0, b1, cam_y, stripe):
+    def draw_walls(self, st, seg, b0, b1, cam_y, stripe, far=False):
         f = self.f
         tunnel = seg.tunnel
         g0, g1 = b0.gy, b1.gy
         if tunnel:
-            t0, t1 = self.ly(b0, TUNNEL_HEIGHT, cam_y), self.ly(b1, TUNNEL_HEIGHT, cam_y)
-        band = (seg.i // 3) % 2
+            t0, t1 = self.ly(b0, b0.seg.roof, cam_y), self.ly(b1, b1.seg.roof, cam_y)
+        band = 0 if far else (seg.i // 3) % 2
         # one rock colour for cliff walls: alternating bands look like fence pickets far away
         face = (P.BROWN_D if band else P.ROCK_D) if tunnel else P.ROCK_M
         snowy = seg.region.key == "misty"
-        gap = VERGE + WALL_GAP
+        gap0, gap1 = b0.seg.gap, b1.seg.gap
         for k, (side, stype) in enumerate(((-1, seg.left), (1, seg.right))):
             if stype not in ("wall", "tunnel"):
                 continue
             if not tunnel:
                 t0, t1 = self.ly(b0, WALL_HEIGHT, cam_y), self.ly(b1, WALL_HEIGHT, cam_y)
-            w0, w1 = self.edge(b0, side, gap), self.edge(b1, side, gap)
+            w0, w1 = self.edge(b0, side, VERGE + gap0[k]), self.edge(b1, side, VERGE + gap1[k])
             pygame.draw.polygon(f, face, [(_c(w0), _c(g0)), (_c(w0), _c(t0)), (_c(w1), _c(t1)), (_c(w1), _c(g1))])
             if not tunnel:
                 if seg.i % 7 == 0 and b0.zrel < 80:      # seams only close by (far they look like a fence)
@@ -434,31 +602,80 @@ class Renderer:
                 pygame.draw.polygon(f, lip, [(_c(w0), _c(t0)), (_c(w0), _c(t0 + d0)),
                                              (_c(w1), _c(t1 + d0)), (_c(w1), _c(t1))])
         if tunnel:
-            l0, r0 = self.edge(b0, -1, gap), self.edge(b0, 1, gap)
-            l1, r1 = self.edge(b1, -1, gap), self.edge(b1, 1, gap)
+            l0, r0 = self.edge(b0, -1, VERGE + gap0[0]), self.edge(b0, 1, VERGE + gap0[1])
+            l1, r1 = self.edge(b1, -1, VERGE + gap1[0]), self.edge(b1, 1, VERGE + gap1[1])
             pygame.draw.polygon(f, P.GREY_D if band else P.BLACK,
                                 [(_c(l0), _c(t0)), (_c(r0), _c(t0)), (_c(r1), _c(t1)), (_c(l1), _c(t1))])
-            if seg.i % 5 == 0:       # goblin pit-props
+            if seg.i % 5 == 0 and not far and max(seg.gap) == WALL_GAP:   # goblin pit-props (they alias far away)
                 bw = max(1, int(b0.s * 0.35 * PX))
                 f.fill(P.BROWN_M, (_c(l0), _c(t0), bw, _c(g0 - t0)))
                 f.fill(P.BROWN_M, (_c(r0 - bw), _c(t0), bw, _c(g0 - t0)))
                 f.fill(P.BROWN_M, (_c(l0), _c(t0), _c(r0 - l0), bw))
 
-    def draw_skirt(self, seg, b, cam_y):
+    @staticmethod
+    def skirt_edges(seg):
+        """(lateral, height) of the skirt's top corners: the cliff foot on a gorge side,
+        far away level with the path on any other."""
+        return [(side * (seg.half + VERGE + LIP + 1.4), -3.0) if stype == "gorge" else (side * 3000.0, 0.0)
+                for side, stype in ((-1, seg.left), (1, seg.right))]
+
+    def skirt_reach(self, pts):
+        """For each segment slot: where (screen x, left and right) the skirt of the next
+        nearer segment ends - this one's skirt is in view only beyond that."""
+        reach = []
+        lo, hi = float(LIM), float(-LIM)
+        for n in range(len(pts) - 1):
+            reach.append((lo, hi))
+            b = pts[n]
+            if b.seg.cliffs and b.zrel >= NEAR:
+                (xl, _), (xr, _) = self.skirt_edges(b.seg)
+                lo, hi = self.lx(b, xl), self.lx(b, xr)
+        return reach
+
+    def draw_skirt(self, seg, b, cam_y, reach):
         """Rock under the path down to the valley floor, so a path seen across a
         gorge stands on a cliff instead of hanging in the air."""
-        pts = []
-        for side, stype in ((-1, seg.left), (1, seg.right)):
-            if stype == "gorge":
-                pts.append((side * (seg.half + VERGE + LIP + 1.4), -3.0))
-            else:
-                pts.append((side * 3000.0, 0.0))
-        (xl, hl), (xr, hr) = pts
-        scr = [(self.lx(b, xl), self.ly(b, hl, cam_y)), (self.lx(b, xr), self.ly(b, hr, cam_y)),
-               (self.lx(b, xr), self.ly(b, -250, cam_y)), (self.lx(b, xl), self.ly(b, -250, cam_y))]
-        # far away the rock fades into the valley haze (no hard edge where drawing ends)
-        col = P.ROCK_D if b.zrel < 200 else P.FAR_LAND2
-        pygame.draw.polygon(self.f, col, [(_c(x), _c(y)) for x, y in scr])
+        (xl, hl), (xr, hr) = self.skirt_edges(seg)
+        sxl, sxr = self.lx(b, xl), self.lx(b, xr)
+        scr = [(_c(sxl), _c(self.ly(b, hl, cam_y))), (_c(sxr), _c(self.ly(b, hr, cam_y))),
+               (_c(sxr), _c(self.ly(b, -250, cam_y))), (_c(sxl), _c(self.ly(b, -250, cam_y)))]
+        # far away the rock fades out, leaving the valley behind it (so where drawing ends
+        # the valley floor simply goes on). Every skirt reaches the screen bottom, so a sudden
+        # change would show as a vertical line down the valley: dither instead, but only in
+        # the strip of this skirt that sticks out past the nearer ones (the rest gets covered)
+        near, far = SKIRT_FADE
+        level = int(max(0.0, min(1.0, (b.zrel - near) / (far - near))) * 16)
+        if level < 16:
+            strips = []
+            if level > 0:
+                xs, ys = [x for x, _ in scr], [y for _, y in scr]
+                box = pygame.Rect(min(xs), min(ys), max(xs) - min(xs) + 1, max(ys) - min(ys) + 1)
+                lo, hi = reach
+                for x0, x1 in ((sxl - 1, lo + 1), (hi - 1, sxr + 1)):
+                    strip = box.clip(pygame.Rect(_c(x0), box.y, _c(x1) - _c(x0) + 1, box.h))
+                    strip = strip.clip(self.f.get_rect())
+                    if strip.w > 0 and strip.h > 0:
+                        tmp = self.skirt_tmp
+                        tmp.set_colorkey(None)
+                        tmp.blit(self.backdrop, strip.topleft, strip)
+                        tmp.blit(self._mask(level), strip.topleft, strip)
+                        tmp.set_colorkey(MASK_KEY)
+                        strips.append(strip)
+            pygame.draw.polygon(self.f, P.ROCK_D, scr)
+            # beside the path on open ground (not cliff or rock wall) the hillside goes on:
+            # ground coloured, so a road dropping out of sight behind a crest meets ground,
+            # like the ground beside it
+            rocky = ("gorge", "wall")
+            if seg.left not in rocky or seg.right not in rocky:
+                edge = seg.half + VERGE
+                gl = xl if seg.left not in rocky else edge
+                gr = xr if seg.right not in rocky else -edge
+                top, bottom = self.ly(b, 0.0, cam_y), self.ly(b, -250, cam_y)
+                pygame.draw.polygon(self.f, P.GROUND_AVG[seg.region.index % 2][0],
+                                    [(_c(self.lx(b, gl)), _c(top)), (_c(self.lx(b, gr)), _c(top)),
+                                     (_c(self.lx(b, gr)), _c(bottom)), (_c(self.lx(b, gl)), _c(bottom))])
+            for strip in strips:        # let the valley show through `level` of 16 pixels
+                self.f.blit(self.skirt_tmp, strip.topleft, strip)
 
     # end face of a rock wall: the mountain it belongs to (lateral beyond the wall, height)
     CAP = [(0, -250), (0, WALL_HEIGHT), (6, WALL_HEIGHT + 6), (30, WALL_HEIGHT + 14), (90, WALL_HEIGHT + 40),
@@ -473,8 +690,6 @@ class Renderer:
             scr = [(_c(self.lx(b, side * (o + x))), _c(self.ly(b, h, cam_y))) for x, h in self.CAP]
             pygame.draw.polygon(self.f, P.ROCK_D, scr)
             pygame.draw.lines(self.f, P.SNOW if snowy else P.ROCK_L, False, scr[1:-1], 2)
-            # a darker crease where the face meets the wall
-            pygame.draw.line(self.f, P.BLACK, scr[0], scr[1])
 
     # mountain outline (lateral m from the path centre, height m), one side
     ROCK_FACE = [(0, 48), (12, 46), (30, 40), (55, 52), (110, 72), (400, 115), (3000, 170), (3000, -250)]
@@ -484,12 +699,8 @@ class Renderer:
         f = self.f
         for side in (-1, 1):
             if seg.face == "tunnel":
-                wo = seg.half + VERGE + WALL_GAP
-                pts = [(wo, 0), (wo, TUNNEL_HEIGHT), (0, TUNNEL_HEIGHT + 1.5)] + self.ROCK_FACE + [(wo + 3, -40)]
-                body, rim = P.ROCK_D, P.ROCK_M
-            elif seg.face == "rock":
-                o = seg.face_open
-                pts = [(o, 0), (o, 30), (o + 15, 50), (o + 60, 75)] + self.ROCK_FACE[4:] + [(o + 3, -40)]
+                wo = seg.half + VERGE + seg.gap[side > 0]
+                pts = [(wo, 0), (wo, seg.roof), (0, seg.roof + 1.5)] + self.ROCK_FACE + [(wo + 3, -40)]
                 body, rim = P.ROCK_D, P.ROCK_M
             else:   # forest edge: jagged treeline
                 o = seg.face_open
@@ -534,7 +745,7 @@ class Renderer:
             return
         f = self.f
         if st.weather == "snow":
-            for i, p in enumerate(self.rain[:110]):
+            for i, p in enumerate(self.rain[:int(110 * st.precip)]):
                 p[1] += (22 + (i % 5) * 6) * dt
                 p[0] += math.sin(st.t * 0.8 + i) * 12 * dt - 6 * dt
                 if p[1] > SCENE_BOTTOM:
@@ -548,6 +759,7 @@ class Renderer:
             n = 150 if st.weather == "storm" else 90
             if st.region.key == "mirkwood":
                 n //= 3
+            n = int(n * st.precip)
             for p in self.rain[:n]:
                 p[1] += 240 * dt
                 p[0] -= 50 * dt
@@ -574,6 +786,10 @@ class FrameState:
         self.t = 0.0
         self.hour = 10.8
         self.weather = "clear"
+        self.precip = 1.0       # 0..1 while rain or snow sets in
+        self.night = 0.0
+        self.gloom = 0.0
+        self.border = None      # (earlier, later, share of later) near a region border
         self.bolt = None
 
 

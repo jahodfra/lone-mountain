@@ -20,6 +20,7 @@ from .state import Progress
 from .world import World
 
 OVERCAST = {"clear": 0.0, "cloudy": 0.45, "rain": 0.8, "storm": 1.0, "snow": 0.7}
+WEATHER_EASE_S = 20.0    # real seconds for the sky to change when the weather turns
 
 
 def kcal_per_min(kmh, kg):
@@ -65,6 +66,7 @@ class Game:
         self.t = 0.0
         self.bg_offset = 0.0
         self.weather_clock = 0.0
+        self.overcast = None    # eases toward the current weather's overcast
         self.flash = 0.0
         self.bolt = None
         self.bolt_t = 0.0
@@ -153,9 +155,10 @@ class Game:
 
         # weather changes every 6 game hours
         self.weather_clock += dt_real * 24.0 / (self.settings["day_length_minutes"] * 60.0)
-        region = J.region_at(r1)
-        if 795 <= r1 / 1000 < 800:
-            prog.weather = "storm"
+        region = J.view(J.region_at(r1), d1)
+        forced = J.forced_weather(r1, d1)
+        if forced:
+            prog.weather = forced
         elif self.weather_clock > 6.0 or prog.weather not in region.weather:
             self.weather_clock = 0.0
             ws = list(region.weather.items())
@@ -166,7 +169,12 @@ class Game:
                     prog.weather = name
                     break
 
-        if prog.weather == "storm" and random.random() < dt / 9.0:
+        target = OVERCAST.get(prog.weather, 0.0)
+        if self.overcast is None:
+            self.overcast = target
+        self.overcast += (target - self.overcast) * min(1.0, dt_real / WEATHER_EASE_S * 3)
+
+        if prog.weather == "storm" and self.overcast > 0.85 and random.random() < dt / 9.0:
             self.flash = 1.0
             x = random.randint(40, 280)
             pts, y = [(x, TOP_BAR)], TOP_BAR
@@ -238,11 +246,19 @@ class Game:
         st.cam_z = prog.total_m
         st.cam_y = camera_y(st.cam_z)
         st.route, st.direction, journeys = J.route_pos(st.cam_z)
-        st.region = J.region_at(st.route)
+        st.region = J.view(J.region_at(st.route), st.direction)
+        b = J.border(st.route)
+        st.border = (J.view(b[0], st.direction), J.view(b[1], st.direction), b[2]) if b else None
+        cave = J.blended(st.route, "cave", width=40.0)
+        st.night = 1.0 if cave > 0.5 else P.daylight(prog.hour)[3]
+        st.gloom = J.blended(st.route, "gloom")
         st.bg_offset = self.bg_offset
         st.t = self.t
         st.hour = prog.hour
         st.weather = prog.weather
+        target = OVERCAST.get(prog.weather, 0.0)
+        overcast = target if self.overcast is None else self.overcast
+        st.precip = min(1.0, overcast / target) if target else 0.0
         st.bolt = self.bolt if self.bolt_t > 0 else None
 
         r = self.renderer
@@ -276,11 +292,14 @@ class Game:
         if self.settings.get("show_fps"):
             font.draw(self.frame, f"{self.clock.get_fps():.0f}", 3, TOP_BAR + 2, P.HUD_WHITE)
 
-        gloom = J.blended(st.route, "gloom")
         nxt_region = J.region_at(max(0.0, min(J.LEG_M - 1, st.route + st.direction * 470)))
-        pal = P.build(prog.hour, st.region, nxt_region, st.region.index % 2, gloom=gloom,
-                      overcast=OVERCAST.get(prog.weather, 0.0), flash=self.flash,
-                      flame_phase=math.sin(self.t * 11) * math.sin(self.t * 7.3))
+        bg_other = None
+        if st.border:
+            bg_other = st.border[1] if st.border[0].key == st.region.key else st.border[0]
+        pal = P.build(prog.hour, st.region, nxt_region, st.region.index % 2, gloom=st.gloom,
+                      overcast=overcast, flash=self.flash,
+                      flame_phase=math.sin(self.t * 11) * math.sin(self.t * 7.3),
+                      bg_other=bg_other, cave=cave)
         self.frame.set_palette(pal)
         self.screen.blit(self.frame, (0, 0))
         self.frame.set_palette(P.BASE)

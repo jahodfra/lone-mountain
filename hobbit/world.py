@@ -8,7 +8,7 @@ import math
 import random
 
 from . import journey as J
-from .consts import SEG, VERGE, LIP, WALL_GAP
+from .consts import SEG, VERGE, LIP, WALL_GAP, TUNNEL_HEIGHT
 
 
 def _hash(n):
@@ -51,7 +51,7 @@ def curvature(route_m):
 
 class Segment:
     __slots__ = ("i", "z", "route", "dir", "y", "k", "region", "left", "right",
-                 "path", "sprites", "tunnel", "half", "face", "face_open", "cap_front", "cap_back", "cliffs")
+                 "path", "sprites", "tunnel", "half", "face", "face_open", "cap_front", "cap_back", "cliffs", "gap", "roof")
 
     def __init__(self, i):
         self.i = i
@@ -115,6 +115,13 @@ class World:
         if direction < 0:
             left, right = right, left
         s.left, s.right, s.path = left, right, path
+        # ground between path edge and tunnel/rock wall, per side (wide over Gollum's lake)
+        wide = J.cavern_width(route)
+        s.gap = (WALL_GAP, WALL_GAP + wide) if direction > 0 else (WALL_GAP + wide, WALL_GAP)
+        s.roof = TUNNEL_HEIGHT
+        if left == "tunnel" and region.key in J.HALLS:
+            g, s.roof = J.HALLS[region.key]
+            s.gap = (g, g)
         # rock walls are the sides of mountain masses: they get an end face where they
         # start (facing the walker) and where they end (hiding what is behind them)
         prev, nxt = self.travel_sides(s.z - SEG), self.travel_sides(s.z + SEG)
@@ -127,13 +134,11 @@ class World:
         s.face, s.face_open = None, 0.0
         prev = J.region_at(J.route_pos(s.z - SEG)[0])
         keys = [sp[0] for sp in s.sprites]
-        if s.tunnel and prev.sides[0][0] != "tunnel":
+        if s.tunnel and self.travel_sides(s.z - SEG)[0] != "tunnel":
             s.face = "tunnel"
         elif region.key in J.FOREST_REGIONS and prev.key not in J.FOREST_REGIONS:
             s.face = "forest"
             s.face_open = 11.5 if "forest_gate" in keys else s.half + VERGE + 1.2
-        elif "erebor_gate" in keys and direction > 0:
-            s.face, s.face_open = "rock", 26.0
         return s
 
     def _scenery(self, s, region):
@@ -156,7 +161,7 @@ class World:
                     break
             key, _, xmin, xmax, _, yoff = e
             if on == "wall":
-                x = s.half + VERGE + WALL_GAP - 0.05
+                x = s.half + VERGE + s.gap[side > 0] - 0.05
             else:
                 base = s.half + VERGE + (LIP if on == "gorge" else 0)
                 x = base + rng.uniform(xmin, xmax)
@@ -171,6 +176,8 @@ class World:
             out.append(("milestone", 0, s.half + VERGE + 0.4, 0, 1.0, False))
         # unique set pieces
         for km, key, x, yoff in J.set_pieces_between(s.route, s.route + SEG * s.dir):
+            if key in J.FORWARD_ONLY and s.dir < 0:
+                continue
             out.append((key, int(km * 1000), x * s.dir, yoff, 1.0, False))
         # signposts a little before each landmark (in either direction)
         before = s.route + 250.0 * s.dir

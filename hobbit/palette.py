@@ -52,11 +52,19 @@ FAR_LAND2 = 57
 # two ground sets (region parity) of 6 colours each
 GROUND_SET = (58, 64)
 G_A, G_B, P_A, P_B, V_A, V_B = range(6)
+# per ground set: the average of each stripe pair (grass, path, verge), used far away
+# where a stripe would be thinner than a pixel or two and turn into moire
+GROUND_AVG = ((90, 91, 92), (93, 94, 95))
 CLOUD = 70
 CLOUD_SH = 71
 SUN = 72
 MOON = 73
 EYES = 74
+# a second set of background haze colours: neighbouring regions use alternate sets
+# (by index parity) so their layers can be dithered together across a border
+HAZE_FAR_B, HAZE_NEAR_B, HAZE_NEAR2_B = 75, 76, 77
+HAZE_SETS = ((HAZE_FAR, HAZE_NEAR, HAZE_NEAR2), (HAZE_FAR_B, HAZE_NEAR_B, HAZE_NEAR2_B))
+MOUNTAIN = 78            # the Lonely Mountain on the horizon
 # HUD colours are never lit / tinted
 HUD_BG, HUD_LINE, HUD_LABEL, HUD_VALUE, HUD_BIG, HUD_TITLE, HUD_SHADOW, HUD_WHITE, HUD_GREEN, HUD_DIM = range(80, 90)
 
@@ -136,10 +144,19 @@ def _mul(c, m):
     return (c[0] * m[0], c[1] * m[1], c[2] * m[2])
 
 
+CAVE_LIGHT = (0.62, 0.55, 0.5)     # underground: the same at noon and at midnight
+
+
 def build(hour, region, next_region, parity, gloom=0.0, overcast=0.0,
-          flash=0.0, flame_phase=0.0):
-    """Compute the 256-entry display palette for this frame."""
+          flash=0.0, flame_phase=0.0, bg_other=None, cave=0.0):
+    """Compute the 256-entry display palette for this frame.
+
+    `bg_other` is the neighbouring region whose horizon is being blended in.
+    """
     light, top, hor, night = daylight(hour)
+    if cave:
+        light = _lerp3(light, CAVE_LIGHT, cave)
+        night = _lerp(night, 1.0, cave)      # eyes glow in the dark
     # overcast weather greys the sky and dims the land
     if overcast:
         grey = (110, 110, 125)
@@ -176,18 +193,24 @@ def build(hour, region, next_region, parity, gloom=0.0, overcast=0.0,
 
     # region colours: haze blends toward the horizon colour
     r = region
-    pal[HAZE_FAR] = _q3(_lerp3(_mul(c12(r.bg_far_col), light), hor, 0.45))
+    for reg in (region, bg_other):
+        if reg is not None:
+            far, near, near2 = HAZE_SETS[reg.index % 2]
+            pal[far] = _q3(_lerp3(_mul(c12(reg.bg_far_col), light), hor, 0.45))
+            pal[near] = _q3(_lerp3(_mul(c12(reg.bg_near_col), light), hor, 0.2))
+            pal[near2] = _q3(_lerp3(_mul(c12(reg.bg_near_col2), light), hor, 0.2))
     pal[HAZE_FAR_SNOW] = _q3(_lerp3(_mul(c12(0xEEF), light), hor, 0.3))
-    pal[HAZE_NEAR] = _q3(_lerp3(_mul(c12(r.bg_near_col), light), hor, 0.2))
-    pal[HAZE_NEAR2] = _q3(_lerp3(_mul(c12(r.bg_near_col2), light), hor, 0.2))
+    pal[MOUNTAIN] = _q3(_lerp3(_mul(c12(0x667), light), hor, 0.35))
     # below the horizon the near hills/mountains continue down into a darker valley floor
-    pal[FAR_LAND] = pal[HAZE_NEAR2]
+    pal[FAR_LAND] = pal[HAZE_SETS[r.index % 2][2]]
     pal[FAR_LAND2] = _q3(_lerp3(_mul(c12(r.far_land[1]), light), hor, 0.12))
 
     for reg, par in ((region, parity), (next_region, 1 - parity)):
         base = GROUND_SET[par]
         for k, hexc in enumerate(reg.ground):
             pal[base + k] = _q3(_mul(c12(hexc), light))
+        for k, avg in enumerate(GROUND_AVG[par]):
+            pal[avg] = _q3(_lerp3(pal[base + 2 * k], pal[base + 2 * k + 1], 0.5))
 
     for i, hexc in HUD_COLOURS.items():
         pal[i] = c12(hexc)

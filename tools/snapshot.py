@@ -24,7 +24,9 @@ from hobbit.state import load_settings  # noqa: E402
 def main():
     out = sys.argv[1]
     os.makedirs(out, exist_ok=True)
-    g = Game(load_settings(), headless=True)
+    settings = load_settings()
+    settings["speed_source"] = "keyboard"     # no "belt searching" in the top bar
+    g = Game(settings, headless=True)
     g.mode = "walk"
     g.kmh = 5.0
     for spec in sys.argv[2:]:
