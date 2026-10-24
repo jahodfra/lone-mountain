@@ -444,7 +444,7 @@ class Renderer:
     def draw_world(self, st, world, characters):
         f = self.f
         pts = self.project(st, world)
-        reach = self.skirt_reach(pts)
+        reach = self.skirt_reach(pts, st.cam_y)
         self.backdrop.blit(f, (0, 0))       # sky, hills and valley floor: what far rock fades into
         cam_y = st.cam_y
         poly = pygame.draw.polygon
@@ -619,18 +619,33 @@ class Renderer:
         return [(side * (seg.half + VERGE + LIP + 1.4), -3.0) if stype == "gorge" else (side * 3000.0, 0.0)
                 for side, stype in ((-1, seg.left), (1, seg.right))]
 
-    def skirt_reach(self, pts):
+    def skirt_reach(self, pts, cam_y):
         """For each segment slot: where (screen x, left and right) the skirt of the next
-        nearer segment ends - this one's skirt is in view only beyond that."""
+        nearer segment ends, and the screen row below which it covers everything between -
+        this one's skirt is in view only beyond that."""
         reach = []
-        lo, hi = float(LIM), float(-LIM)
+        lo, hi, cut = float(LIM), float(-LIM), LIM
         for n in range(len(pts) - 1):
-            reach.append((lo, hi))
+            reach.append((lo, hi, cut))
             b = pts[n]
             if b.seg.cliffs and b.zrel >= NEAR:
-                (xl, _), (xr, _) = self.skirt_edges(b.seg)
+                (xl, hl), (xr, hr) = self.skirt_edges(b.seg)
                 lo, hi = self.lx(b, xl), self.lx(b, xr)
+                cut = _c(max(self.ly(b, hl, cam_y), self.ly(b, hr, cam_y)))
         return reach
+
+    def fill_uncovered(self, colour, xl, xr, yl, yr, bottom, reach):
+        """Fill a quad with vertical sides (top corners (xl, yl) and (xr, yr), flat bottom)
+        - but not where the nearer skirt will paint over it anyway: in a gorge every skirt
+        reaches the screen bottom, and drawing each in full fills the screen ~70 times."""
+        lo, hi, cut = reach
+        ixl, ixr, ib = _c(xl), _c(xr), _c(bottom)
+        mid = min(ib, max(cut + 1, _c(yl), _c(yr)))
+        pygame.draw.polygon(self.f, colour, [(ixl, _c(yl)), (ixr, _c(yr)), (ixr, mid), (ixl, mid)])
+        if mid < ib:     # the sides sticking out past the nearer skirt go all the way down
+            for x0, x1 in ((ixl, min(ixr, _c(lo))), (max(ixl, _c(hi)), ixr)):
+                if x1 >= x0:
+                    self.f.fill(colour, (x0, mid, x1 - x0 + 1, ib - mid + 1))
 
     def draw_skirt(self, seg, b, cam_y, reach):
         """Rock under the path down to the valley floor, so a path seen across a
@@ -650,7 +665,7 @@ class Renderer:
             if level > 0:
                 xs, ys = [x for x, _ in scr], [y for _, y in scr]
                 box = pygame.Rect(min(xs), min(ys), max(xs) - min(xs) + 1, max(ys) - min(ys) + 1)
-                lo, hi = reach
+                lo, hi, _ = reach
                 for x0, x1 in ((sxl - 1, lo + 1), (hi - 1, sxr + 1)):
                     strip = box.clip(pygame.Rect(_c(x0), box.y, _c(x1) - _c(x0) + 1, box.h))
                     strip = strip.clip(self.f.get_rect())
@@ -661,7 +676,8 @@ class Renderer:
                         tmp.blit(self._mask(level), strip.topleft, strip)
                         tmp.set_colorkey(MASK_KEY)
                         strips.append(strip)
-            pygame.draw.polygon(self.f, P.ROCK_D, scr)
+            bottom = self.ly(b, -250, cam_y)
+            self.fill_uncovered(P.ROCK_D, sxl, sxr, self.ly(b, hl, cam_y), self.ly(b, hr, cam_y), bottom, reach)
             # beside the path on open ground (not cliff or rock wall) the hillside goes on:
             # ground coloured, so a road dropping out of sight behind a crest meets ground,
             # like the ground beside it
@@ -670,10 +686,9 @@ class Renderer:
                 edge = seg.half + VERGE
                 gl = xl if seg.left not in rocky else edge
                 gr = xr if seg.right not in rocky else -edge
-                top, bottom = self.ly(b, 0.0, cam_y), self.ly(b, -250, cam_y)
-                pygame.draw.polygon(self.f, P.GROUND_AVG[seg.region.index % 2][0],
-                                    [(_c(self.lx(b, gl)), _c(top)), (_c(self.lx(b, gr)), _c(top)),
-                                     (_c(self.lx(b, gr)), _c(bottom)), (_c(self.lx(b, gl)), _c(bottom))])
+                top = self.ly(b, 0.0, cam_y)
+                self.fill_uncovered(P.GROUND_AVG[seg.region.index % 2][0], self.lx(b, gl), self.lx(b, gr),
+                                    top, top, bottom, reach)
             for strip in strips:        # let the valley show through `level` of 16 pixels
                 self.f.blit(self.skirt_tmp, strip.topleft, strip)
 
