@@ -22,6 +22,7 @@ from .world import World
 
 OVERCAST = {"clear": 0.0, "cloudy": 0.45, "rain": 0.8, "storm": 1.0, "snow": 0.7}
 WEATHER_EASE_S = 20.0    # real seconds for the sky to change when the weather turns
+AIM_PX = 120.0           # px: the Mountain / the Hill never get further than this off the middle
 
 
 def kcal_per_min(kmh, kg):
@@ -66,6 +67,7 @@ class Game:
         self.phase = 0.0
         self.t = 0.0
         self.bg_offset = 0.0
+        self.aim = 0.0          # px: where the road's goal (the Mountain, the Hill) is off the middle
         self.weather_clock = 0.0
         self.overcast = None    # eases toward the current weather's overcast
         self.flash = 0.0
@@ -129,7 +131,12 @@ class Game:
 
         # bend of the road turns the background
         seg = self.world.segment(int(prog.total_m // 2.0))
-        self.bg_offset += seg.k * dz_route * PX
+        turn = seg.k * dz_route * PX
+        self.bg_offset += turn
+        # the goal on the horizon (the Mountain, the Hill) turns with the background, so it
+        # stands still against the hills on a straight; in bends it also drifts back towards
+        # the middle, the further out the more, so the winding road keeps leading to it
+        self.aim -= turn + self.aim * abs(turn) / AIM_PX
 
         # walking cadence (steps per second) -> animation phase
         if self.kmh > 0.2:
@@ -193,6 +200,7 @@ class Game:
         self.progress.total_m = max(0.0, self.progress.total_m + km * 1000)
         route, direction, _ = J.route_pos(self.progress.total_m)
         self.banners = []       # messages about the place we just left no longer apply
+        self.aim = 0.0
         self.banners.insert(0, [f"JUMP {km:+d} KM", [f"{J.region_at(route).name} - ROUTE KM {route / 1000:.1f}"
                                                      + ("" if direction > 0 else " (BACK)")], 2.0])
 
@@ -208,6 +216,7 @@ class Game:
         state = {"total_m": self.progress.total_m, "route_km": route / 1000, "direction": direction,
                  "region": J.region_at(route).name, "hour": self.progress.hour,
                  "weather": self.progress.weather, "t": self.t, "bg_offset": self.bg_offset,
+                 "aim": self.aim,
                  "phase": self.phase, "kmh": self.kmh}
         with open(base + ".json", "w") as fh:
             json.dump(state, fh, indent=1)
@@ -254,6 +263,7 @@ class Game:
         st.night = 1.0 if cave > 0.5 else P.daylight(prog.hour)[3]
         st.gloom = J.blended(st.route, "gloom")
         st.bg_offset = self.bg_offset
+        st.aim = self.aim
         st.t = self.t
         st.hour = prog.hour
         st.weather = prog.weather

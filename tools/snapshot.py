@@ -35,6 +35,7 @@ def main():
                 d = json.load(fh)
             g.progress.total_m, g.progress.hour, g.progress.weather = d["total_m"], d["hour"], d["weather"]
             g.t, g.bg_offset, g.phase, g.kmh = d["t"], d["bg_offset"], d["phase"], d["kmh"]
+            g.aim = d.get("aim", 0.0)
             g.dt, g.banners = 1 / 60, []
             g.draw()
             name = os.path.join(out, os.path.basename(spec)[:-5] + "_rerender.png")

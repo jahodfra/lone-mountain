@@ -329,7 +329,7 @@ class Renderer:
             h = 6 + 30 * (280 - d) / 200
         else:
             h = 36 + 84 * (1 - d / 80) ** 1.6
-        cx = 160 + 70 * math.sin(st.bg_offset / 400.0)
+        cx = 160 + st.aim
         base = HORIZON
         top = base - h
         if d < 30:      # close up: the textured mountain
@@ -365,7 +365,7 @@ class Renderer:
             return
         d = st.route / 1000.0
         h = 6 + 16 * (1 - d / 6) ** 1.5
-        cx = 160 + 50 * math.sin(st.bg_offset / 400.0 + 1.0)
+        cx = 160 + st.aim
         pts = [(cx - h * 3.2, HORIZON), (cx - h * 1.6, HORIZON - h * 0.6), (cx - h * 0.5, HORIZON - h),
                (cx + h * 0.6, HORIZON - h * 0.95), (cx + h * 1.8, HORIZON - h * 0.45), (cx + h * 3.4, HORIZON)]
         pygame.draw.polygon(self.f, P.GREEN_M, [(_c(x), _c(y)) for x, y in pts])
@@ -798,6 +798,7 @@ class FrameState:
         self.direction = 1
         self.region = J.REGIONS[0]
         self.bg_offset = 0.0
+        self.aim = 0.0
         self.t = 0.0
         self.hour = 10.8
         self.weather = "clear"
