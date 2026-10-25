@@ -285,7 +285,7 @@ class Game:
             hud.title_screen(self.frame, prog.total_m / 1000, st.route / 1000, leg, journeys, blink)
         elif self.banners:
             b = self.banners[0]
-            hud.banner(self.frame, b[0], b[1], blink=(b[2] > 6.5 and blink))
+            hud.banner(self.frame, b[0], b[1])
         if self.paused:
             hud.banner(self.frame, "PAUSED", ["PRESS P TO CONTINUE"], y=70)
         if self.show_help:

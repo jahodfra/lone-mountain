@@ -63,8 +63,8 @@ def panel(f, kmh, target, session_m, total_m, session_s, total_s, kcal):
     font.draw(f, f"{int(kcal):5d}", 277, y0 + 14, P.HUD_VALUE)
 
 
-def banner(f, title, lines, y=24, blink=False):
-    if title and not blink:
+def banner(f, title, lines, y=24):
+    if title:
         scale = 2 if font.width(title, 2) <= W - 8 else 1
         font.draw_centered(f, title, W // 2, y, P.HUD_TITLE, scale=scale, shadow=P.HUD_SHADOW)
         y += 7 * scale + 5
